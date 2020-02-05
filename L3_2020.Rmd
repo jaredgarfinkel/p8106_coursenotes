@@ -1,0 +1,264 @@
+---
+title: "Cross-validation and Bootstrapping" 
+author: "Yifei Sun"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+\newpage
+
+```{r}
+library(FNN)
+library(ModelMetrics)
+library(caret)
+library(boot)
+library(Rcpp)
+library(microbenchmark)
+```
+
+# Cross-validation
+You can generate a simulated training dataset or use an existing dataset. For illustration, we use a simulated dataset with two predictors.
+```{r}
+# Data generating function - you can replace this with your own function
+gen_data <- function(N)
+{
+  X <- rnorm(N, mean = 1)
+  X2 <- rnorm(N, mean = 1)
+  eps <- rnorm(N, sd = .5)
+  Y <- sin(X) + (X2)^2 + eps
+  data.frame(Y = Y, X = X, X2 = X2)
+}
+
+set.seed(2020)
+# generate the training data
+N <- 200
+trainData <- gen_data(N)
+
+```
+
+The function `featurePlot()` in `caret` is a wrapper for different lattice plots to visualize the data. The various graphical parameters (color, line type, background, etc) that control the look of Trellis displays are highly customizable. You can explore `trellis.par.set()` after class.
+
+```{r, fig.height = 4}
+theme1 <- trellis.par.get()
+theme1$plot.symbol$col <- rgb(.2, .4, .2, .5)
+theme1$plot.symbol$pch <- 16
+theme1$plot.line$col <- rgb(.8, .1, .1, 1)
+theme1$plot.line$lwd <- 2
+theme1$strip.background$col <- rgb(.0, .2, .6, .2)
+trellis.par.set(theme1)
+
+featurePlot(x = trainData[,(2:3)], 
+            y = trainData[,1], 
+            plot = "scatter", 
+            span = .5, 
+            labels = c("Predictors","Y"),
+            type = c("p", "smooth"),
+            layout = c(2, 1))
+```
+
+### The validation set approach
+The function `createDataPartition()` creats test/training or test/validation partitions.
+```{r}
+trRows <- createDataPartition(trainData$Y,
+                              p = .75,
+                              list = FALSE)
+
+fit_lm <- lm(Y~., data = trainData[trRows,])
+pred_lm <- predict(fit_lm, trainData[-trRows,])
+
+pred_knn1 <- knn.reg(train = trainData[trRows,2:3], test = trainData[-trRows,2:3], 
+                     y = trainData$Y[trRows], k = 5)
+  
+pred_knn2 <- knn.reg(train = trainData[trRows,2:3], test = trainData[-trRows,2:3], 
+                     y = trainData$Y[trRows], k = 20)
+
+# validation set errors
+mse(trainData$Y[-trRows], pred_lm)
+mse(trainData$Y[-trRows], pred_knn1$pred)
+mse(trainData$Y[-trRows], pred_knn2$pred)
+```
+
+### K-fold CV
+#### Approach 1
+The function `createFolds()` splits the data into k groups. `returnTrain = TRUE` means the values returned are the sample positions corresponding to the data used during training.
+
+```{r}
+cvSplits <- createFolds(trainData$Y, 
+                        k = 10, 
+                        returnTrain = TRUE)
+
+str(cvSplits)
+```
+
+
+```{r}
+K <- 10
+mseK1 <- rep(NA, K)
+mseK2 <- rep(NA, K)
+mseK3 <- rep(NA, K)
+
+for(k in 1:K)
+{
+  trRows <- cvSplits[[k]]
+  
+  fit_lm <- lm(Y~X+X2, data = trainData[trRows,])
+  pred_lm <- predict(fit_lm, trainData[-trRows,])
+  
+  pred_knn1 <- knn.reg(train = trainData[trRows,2:3], test = trainData[-trRows,2:3], 
+               y = trainData$Y[trRows], k = 5)
+  
+  pred_knn2 <- knn.reg(train = trainData[trRows,2:3], test = trainData[-trRows,2:3], 
+               y = trainData$Y[trRows], k = 20)
+  
+  mseK1[k] <- mse(trainData$Y[-trRows], pred_lm)
+  mseK2[k] <- mse(trainData$Y[-trRows], pred_knn1$pred)
+  mseK3[k] <- mse(trainData$Y[-trRows], pred_knn2$pred)
+}
+# K-fold MSE
+c(mean(mseK1), mean(mseK2), mean(mseK3))
+```
+
+#### Approach 2 (recommended)
+Calculate the 10-fold CV MSE using the function `train()`.
+
+```{r}
+# 10-fold CV
+ctrl1 <- trainControl(method = "cv", number = 10)
+# other options
+ctrl2 <- trainControl(method = "LOOCV")
+ctrl3 <- trainControl(method = "none") # only fits one model to the entire training set
+ctrl4 <- trainControl(method = "boot632")
+ctrl5 <- trainControl(method = "repeatedcv", repeats = 5) 
+ctrl6 <- trainControl(method = "LGOCV") 
+
+set.seed(1)
+lmFit <- train(Y~., 
+                data = trainData, 
+                method = "lm", 
+                trControl = ctrl1)
+lmFit
+
+set.seed(1)
+knnFit <- train(Y~., 
+                data = trainData, 
+                method = "knn", 
+                trControl = ctrl1)
+knnFit
+```
+To compare these two models based on their cross-validation statistics, the `resamples()` function can be used with models that share a common set of resampled data sets.
+```{r}
+resamp <- resamples(list(lm = lmFit, knn = knnFit))
+summary(resamp)
+```
+
+
+
+# Bootstrapping
+
+We consider an example on calculating the standard error for the sample median. 
+
+```{r}
+set.seed(2020)
+# generate a sample
+N <- 200
+X <- rnorm(N)
+
+# sampling distribution 
+B0 <- 1000
+med0 <- rep(NA, B0)
+for(b in 1:B0)
+{
+  med0[b] <- quantile(rnorm(N), probs = .5)
+}
+sd(med0)
+```
+
+### Writing an R function
+
+```{r}
+quantileRBoot <- function(X, prob = 0.5, B)
+{
+  med <- rep(NA, B)
+  for(b in 1:B)
+  {
+    med[b] <- quantile(X[sample(x = 1:N, size = N, replace = TRUE)], probs = prob)
+  }
+  sd(med)
+}
+
+quantileRBoot(X,0.5,1000)
+```
+
+### Bootstrap using `boot()`
+
+```{r}
+fun <- function(dat, ind, prob) 
+{
+  quantile(dat[ind], probs = prob)
+}
+
+med_boot <- boot(X, statistic = fun, prob = 0.5, R = 1000)
+sd(med_boot$t)
+boot.ci(med_boot)
+```
+
+
+### Writing a function using `Rcpp` (optional but quite useful)
+
+For simplicity, we use the type 7 definition.
+
+```{Rcpp}
+#include <Rcpp.h>
+
+// [[Rcpp::export]]
+double quantileRcppBoot(Rcpp::NumericVector x, double prob, int B) {
+  
+  int n = x.size();
+  double index = (n-1.)*prob;
+  int lo = std::floor(index), hi = std::ceil(index);
+  double g = index-lo;
+  
+  Rcpp::NumericVector qvec(B);
+  
+  for(int b = 0; b < B; b++)
+  {
+    Rcpp::NumericVector xb = x[floor(Rcpp::runif(n,0,x.size()))]; 
+    Rcpp::NumericVector y = xb.sort();
+    qvec[b] = (1.-g)*y[lo] + g*y[hi];
+  }
+  
+  return Rcpp::sd(qvec);
+}
+```
+
+```{r}
+quantileRcppBoot(X,0.5,1000)
+
+
+mbm <- microbenchmark(R = quantileRBoot(X,0.5,1000), 
+                      Rcpp = quantileRcppBoot(X,0.5,1000), 
+                      boot = boot(X, statistic = fun, prob = 0.5, R = 1000),
+                      times = 10L)
+
+
+boxplot(mbm)
+```
+
+
