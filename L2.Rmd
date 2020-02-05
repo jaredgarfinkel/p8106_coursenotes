@@ -1,0 +1,117 @@
+---
+title: "Linear Regression" 
+author: "Yifei Sun"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: 2
+  html_document:
+    df_print: paged
+    toc: yes
+    toc_depth: '2'
+header-includes:
+- \usepackage{fancyhdr}
+- \usepackage{lipsum}
+- \pagestyle{fancy}
+- \fancyhead[R]{\thepage}
+- \fancypagestyle{plain}{\pagestyle{fancy}}
+--- 
+
+\newpage
+
+In this example, we assess the association between high density lipoprotein (HDL) cholesterol and body mass index, blood pressure, and other demographic factors (age, gender, race) using the NHANES data (https://wwwn.cdc.gov/nchs/nhanes/ContinuousNhanes/Default.aspx?BeginYear=2001).
+ 
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, results = 'asis')
+```
+
+
+```{r}
+library(RNHANES)
+library(tidyverse)
+library(summarytools)
+library(stargazer)
+library(leaps)
+```
+
+The data can be downloaded using functions in the package `RNHANES`.
+
+```{r}
+dat <- nhanes_load_data("l13_B", "2001-2002")
+
+dat = dat %>% 
+  left_join(nhanes_load_data("BMX_B", "2001-2002"), by="SEQN") %>%
+  left_join(nhanes_load_data("BPX_B", "2001-2002"), by="SEQN") %>%
+  left_join(nhanes_load_data("DEMO_B", "2001-2002"), by="SEQN")
+
+dat = dat %>% 
+  select(SEQN, RIAGENDR, RIDRETH1, RIDAGEYR, BMXBMI, BPXSY1, LBDHDL)
+
+colnames(dat) <- c("ID", "gender", "race", "age", "bmi", "sbp", "hdl")
+
+dat$race <- as.factor(dat$race)
+
+dat <- na.omit(dat)
+```
+
+We first look at the summary statistics of the predictors and the response.
+
+```{r}
+st_options(plain.ascii = FALSE,       
+           style = "rmarkdown", 
+           dfSummary.silent = TRUE,        
+           footnote = NA,          
+           subtitle.emphasis = FALSE)      
+
+dfSummary(dat[,-1])
+```
+
+# Simple linear regression
+
+```{r, fig.height = 3, fig.width = 4, fig.align = 'center'}
+fit0 <- lm(hdl ~ bmi,
+           data = dat)
+
+stargazer(fit0, header=FALSE, type='latex')
+
+ggplot(dat, aes(bmi, hdl)) +
+  geom_point(alpha = 0.05, size = 0.5, color = "black") +
+  geom_smooth(method = "lm") + 
+  labs(x = "BMI", y = "HDL cholesterol")
+```
+
+
+# Multiple linear regression: a small experiment
+
+```{r}
+fit1 <- lm(hdl ~ bmi + age + gender + race + sbp,
+           data = dat)
+
+fit2 <- lm(bmi ~ age + gender + race + sbp,
+           data = dat)
+
+r2 <- fit2$residuals
+
+fit3 <- lm(hdl ~ r2,
+           data = dat)
+
+coef(fit1)["bmi"]
+
+coef(fit3)["r2"]
+```
+
+# Prediction interval vs. confidence interval
+
+```{r}
+newdata <- dat[1,]
+predict(fit1, newdata, interval = "predict") 
+predict(fit1, newdata, interval = "confidence") 
+```
+
+# Model selection
+
+```{r}
+regsubsetsObj <- regsubsets(hdl ~ bmi + age + gender + race + sbp, data = dat, 
+                            method = "exhaustive") 
+plot(regsubsetsObj, scale = "adjr2")
+```
