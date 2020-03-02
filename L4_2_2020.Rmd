@@ -38,18 +38,15 @@ Last time we use all the data to build the models. This time we split the data i
 
 ```{r}
 data(Hitters)
-# delete rows containing the missing data
 Hitters <- na.omit(Hitters)
 
-set.seed(2019)
+set.seed(111111)
 trRows <- createDataPartition(Hitters$Salary,
                               p = .75,
                               list = F)
 
 # training data
-# matrix of predictors (glmnet uses input matrix)
 x <- model.matrix(Salary~.,Hitters)[trRows,-1]
-# vector of response
 y <- Hitters$Salary[trRows]
 
 # test data
@@ -72,8 +69,12 @@ summary(pcr.mod)
 
 validationplot(pcr.mod, val.type="MSEP", legendpos = "topright")
 
+cv.mse <- RMSEP(pcr.mod)
+ncomp.cv <- which.min(cv.mse$val[1,,])-1
+ncomp.cv
+
 predy2.pcr <- predict(pcr.mod, newdata = Hitters[-trRows,], 
-                      ncomp = 18)
+                      ncomp = ncomp.cv)
 # test MSE
 mse(y2, predy2.pcr)
 ```
@@ -92,8 +93,12 @@ pls.mod <- plsr(Salary~.,
 summary(pls.mod)
 validationplot(pls.mod, val.type="MSEP", legendpos = "topright")
 
-predy2.pls <- predict(pcr.mod, newdata = Hitters[-trRows,], 
-                      ncomp = 15)
+cv.mse <- RMSEP(pls.mod)
+ncomp.cv <- which.min(cv.mse$val[1,,])-1
+ncomp.cv
+
+predy2.pls <- predict(pls.mod, newdata = Hitters[-trRows,], 
+                      ncomp = ncomp.cv)
 # test MSE
 mse(y2, predy2.pls)
 ```
@@ -110,20 +115,24 @@ ctrl1 <- trainControl(method = "repeatedcv", number = 10, repeats = 5)
 set.seed(2)
 pcr.fit <- train(x, y,
                  method = "pcr",
-                 tuneLength = 18,
+                 tuneGrid  = data.frame(ncomp = 1:19),
                  trControl = ctrl1,
                  preProc = c("center", "scale"))
-# need to preprocess your data when using predict()
+# need to preprocess your data when using predict.pcr()
 trans <- preProcess(x, method = c("center", "scale"))
 predy2.pcr2 <- predict(pcr.fit$finalModel, newdata = predict(trans, x2), 
                        ncomp = pcr.fit$bestTune$ncomp)
 mse(y2, predy2.pcr2)
 
+# no need to transform when using predict.train()
+predy2.pcr4 <- predict(pcr.fit, newdata = x2)
+mse(y2, predy2.pcr4)
+
 # pcr(..., scale = TRUE)
 set.seed(2)
 pcr.fit2 <- train(x, y,
                   method = "pcr",
-                  tuneLength = 18,
+                  tuneGrid = data.frame(ncomp = 1:19),
                   trControl = ctrl1,
                   scale = TRUE)
 
@@ -139,11 +148,10 @@ ggplot(pcr.fit, highlight = TRUE) + theme_bw()
 set.seed(2)
 pls.fit <- train(x, y,
                  method = "pls",
-                 tuneLength = 18,
+                 tuneGrid = data.frame(ncomp = 1:19),
                  trControl = ctrl1,
-                 scale = TRUE)
-predy2.pls2 <- predict(pls.fit$finalModel, newdata = x2, 
-                       ncomp = pls.fit$bestTune$ncomp)
+                 preProc = c("center", "scale"))
+predy2.pls2 <- predict(pls.fit, newdata = x2)
 mse(y2, predy2.pls2)
 
 ggplot(pls.fit, highlight = TRUE)
@@ -157,8 +165,7 @@ ridge.fit <- train(x, y,
                    tuneGrid = expand.grid(alpha = 0, 
                                           lambda = exp(seq(-1, 10, length=100))),
                    trControl = ctrl1)
-predy2.ridge <- predict(ridge.fit$finalModel, newx = x2, 
-                        s = ridge.fit$bestTune$lambda, type = "response")
+predy2.ridge <- predict(ridge.fit, newdata = x2)
 mse(y2, predy2.ridge)
 
 set.seed(2)
@@ -168,16 +175,8 @@ lasso.fit <- train(x, y,
                                           lambda = exp(seq(-1, 5, length=100))),
                    # preProc = c("center", "scale"),
                    trControl = ctrl1)
-predy2.lasso <- predict(lasso.fit$finalModel, newx = x2, 
-                        s = lasso.fit$bestTune$lambda, type = "response")
+predy2.lasso <- predict(lasso.fit, newdata = x2)
 mse(y2, predy2.lasso)
-
-set.seed(2)
-lm.fit <- train(x, y,
-                method = "lm",
-                trControl = ctrl1)
-predy2.lm <- predict(lm.fit$finalModel, newdata = data.frame(x2))
-mse(y2, predy2.lm)
 ```
 
 Comparing the models based on resampling results.
@@ -185,8 +184,7 @@ Comparing the models based on resampling results.
 resamp <- resamples(list(lasso = lasso.fit, 
                          ridge = ridge.fit, 
                          pcr = pcr.fit, 
-                         pls = pls.fit,
-                         lm = lm.fit))
+                         pls = pls.fit))
 summary(resamp)
 
 bwplot(resamp, metric = "RMSE")
